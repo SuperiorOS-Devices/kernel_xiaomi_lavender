@@ -44,7 +44,6 @@
 #define debug(...)
 #endif
 
-
 #define DEFAULT_FDT_VERSION	17
 
 /*
@@ -59,6 +58,7 @@ extern int phandle_format;	/* Use linux,phandle or phandle properties */
 extern int generate_symbols;	/* generate symbols for nodes with labels */
 extern int generate_fixups;	/* generate fixups */
 extern int auto_label_aliases;	/* auto generate labels -> aliases */
+extern int annotate;		/* annotate .dts with input source location */
 
 #define PHANDLE_LEGACY	0x1
 #define PHANDLE_EPAPR	0x2
@@ -75,10 +75,17 @@ typedef uint32_t cell_t;
 
 /* Data blobs */
 enum markertype {
+	TYPE_NONE,
 	REF_PHANDLE,
 	REF_PATH,
 	LABEL,
+	TYPE_UINT8,
+	TYPE_UINT16,
+	TYPE_UINT32,
+	TYPE_UINT64,
+	TYPE_STRING,
 };
+extern const char *markername(enum markertype markertype);
 
 struct  marker {
 	enum markertype type;
@@ -102,6 +109,8 @@ struct data {
 	for_each_marker(m) \
 		if ((m)->type == (t))
 
+size_t type_marker_length(struct marker *m);
+
 void data_free(struct data d);
 
 struct data data_grow_for(struct data d, int xlen);
@@ -116,7 +125,7 @@ struct data data_insert_at_marker(struct data d, struct marker *m,
 struct data data_merge(struct data d1, struct data d2);
 struct data data_append_cell(struct data d, cell_t word);
 struct data data_append_integer(struct data d, uint64_t word, int bits);
-struct data data_append_re(struct data d, const struct fdt_reserve_entry *re);
+struct data data_append_re(struct data d, uint64_t address, uint64_t size);
 struct data data_append_addr(struct data d, uint64_t addr);
 struct data data_append_byte(struct data d, uint8_t byte);
 struct data data_append_zeroes(struct data d, int len);
@@ -138,6 +147,10 @@ struct label {
 	struct label *next;
 };
 
+struct bus_type {
+	const char *name;
+};
+
 struct property {
 	bool deleted;
 	char *name;
@@ -146,6 +159,7 @@ struct property {
 	struct property *next;
 
 	struct label *labels;
+	struct srcpos *srcpos;
 };
 
 struct node {
@@ -164,6 +178,10 @@ struct node {
 	int addr_cells, size_cells;
 
 	struct label *labels;
+	const struct bus_type *bus;
+	struct srcpos *srcpos;
+
+	bool omit_if_unused, is_referenced;
 };
 
 #define for_each_label_withdel(l0, l) \
@@ -190,14 +208,18 @@ struct node {
 void add_label(struct label **labels, char *label);
 void delete_labels(struct label **labels);
 
-struct property *build_property(char *name, struct data val);
+struct property *build_property(char *name, struct data val,
+				struct srcpos *srcpos);
 struct property *build_property_delete(char *name);
 struct property *chain_property(struct property *first, struct property *list);
 struct property *reverse_properties(struct property *first);
 
-struct node *build_node(struct property *proplist, struct node *children);
-struct node *build_node_delete(void);
+struct node *build_node(struct property *proplist, struct node *children,
+			struct srcpos *srcpos);
+struct node *build_node_delete(struct srcpos *srcpos);
 struct node *name_node(struct node *node, char *name);
+struct node *omit_node_if_unused(struct node *node);
+struct node *reference_node(struct node *node);
 struct node *chain_node(struct node *first, struct node *list);
 struct node *merge_nodes(struct node *old_node, struct node *new_node);
 struct node *add_orphan_node(struct node *old_node, struct node *new_node, char *ref);
@@ -209,7 +231,8 @@ void add_child(struct node *parent, struct node *child);
 void delete_node_by_name(struct node *parent, char *name);
 void delete_node(struct node *node);
 void append_to_property(struct node *node,
-			char *name, const void *data, int len);
+			char *name, const void *data, int len,
+			enum markertype type);
 
 const char *get_unitname(struct node *node);
 struct property *get_property(struct node *node, const char *propname);
@@ -231,7 +254,7 @@ uint32_t guess_boot_cpuid(struct node *tree);
 /* Boot info (tree plus memreserve information */
 
 struct reserve_info {
-	struct fdt_reserve_entry re;
+	uint64_t address, size;
 
 	struct reserve_info *next;
 
@@ -250,6 +273,7 @@ struct dt_info {
 	struct reserve_info *reservelist;
 	uint32_t boot_cpuid_phys;
 	struct node *dt;		/* the device tree */
+	const char *outname;		/* filename being written to, "-" for stdout */
 };
 
 /* DTS version flags definitions */
